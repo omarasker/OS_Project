@@ -1,5 +1,6 @@
 #include "headers.h"
 #include "PriQueue.h"
+#include <math.h>
 #define LOG_FILE_NAME "scheduler.log"
 #define PERF_FILE_NAME "scheduler.perf"
 
@@ -8,6 +9,13 @@ struct PriQueue ready_queue;
 int clk;
 FILE* log_file = NULL;
 int semsyncid, semsyncid2;
+
+// Performance tracking metrics
+int count_processes = 0;
+int total_useful_time = 0;
+float total_waiting_time = 0;
+float total_WTA = 0;
+float sum_squared_WTA = 0;
 
 pid_t create_process(struct Process* p) {
     if (p->pid > 0) {
@@ -30,10 +38,22 @@ void stop_process(pid_t pid) {
 }
 
 void logProcessState(int time, int id, const char* state, struct Process* p) {
-    if (!log_file) log_file = fopen(LOG_FILE_NAME, "w");
+    if (!log_file) {
+        log_file = fopen(LOG_FILE_NAME, "w");
+        if (log_file) {
+            fprintf(log_file, "#At time x process y state arr w total z remain y wait k\n");
+        }
+    }
     if (strcmp(state, "finished") == 0) {
         int TA = time - p->arrival_time;
         float WTA = (float)TA / p->running_time;
+        
+        count_processes++;
+        total_waiting_time += p->waiting_time;
+        total_useful_time += p->running_time;
+        total_WTA += WTA;
+        sum_squared_WTA += WTA * WTA;
+        
         fprintf(log_file, "At time %d process %d %s arr %d total %d remain %d wait %d TA %d WTA %.2f\n",
                 time, id, state, p->arrival_time, p->running_time, p->remaining_time, p->waiting_time, TA, WTA);
     } else {
@@ -87,23 +107,6 @@ void HPF() {
         
         enqueuePri(new_process, &ready_queue);
     }
- 
-    /*
-    struct pnode* queue_display = ready_queue.front;
-    if (queue_display != NULL) {
-        printf("Ready queue: ");
-        while (queue_display != NULL) {
-            printf("P%d(pri=%d, rem=%d, arr=%d) ", 
-                   queue_display->process->id, 
-                   queue_display->process->priority, 
-                   queue_display->process->remaining_time,
-                   queue_display->process->arrival_time);
-            queue_display = queue_display->next;
-        }
-        printf("\n");
-    }
-    */
-
     if (current_process == NULL) {
         if (!isEmptyPri(&ready_queue)) {
             struct Process* next_process = peekPri(&ready_queue);
@@ -131,10 +134,6 @@ void HPF() {
     else {
         int status;
         pid_t wait_result = waitpid(current_pid, &status, WNOHANG);
-        
-        // if (shared_process != NULL) {
-        //     memcpy(current_process, shared_process, sizeof(struct Process));
-        // }
         
         if (wait_result > 0 || current_process->remaining_time <= 0) {
             printf("Process %d has finished\n", current_process->id);
@@ -207,8 +206,37 @@ void HPF() {
     }
 }
 
+void cleanup_and_exit(int signum) {
+    if (count_processes > 0) {
+        FILE* perf_file = fopen(PERF_FILE_NAME, "w");
+        if (perf_file) {
+            float cpu_util = ((float)total_useful_time / clk) * 100.0;
+            float avg_wta = total_WTA / count_processes;
+            float avg_waiting = total_waiting_time / count_processes;
+            
+            float variance = (sum_squared_WTA / count_processes) - (avg_wta * avg_wta);
+            float std_wta = 0;
+            if (variance > 0) {
+                std_wta = sqrt(variance);
+            }
+            
+            fprintf(perf_file, "CPU utilization = %.2f%%\n", cpu_util);
+            fprintf(perf_file, "Avg WTA = %.2f\n", avg_wta);
+            fprintf(perf_file, "Avg Waiting = %.2f\n", avg_waiting);
+            fprintf(perf_file, "Std WTA = %.2f\n", std_wta);
+            fclose(perf_file);
+        }
+    }
+    
+    destroyClk(true);
+    exit(0);
+}
+
 int main(int argc, char * argv[])
 {
+    signal(SIGINT, cleanup_and_exit);
+    signal(SIGTERM, cleanup_and_exit);
+    
     initClk();
     initPriQueue(&ready_queue);
     
