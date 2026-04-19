@@ -69,7 +69,7 @@ int main(int argc, char *argv[])
     DBG("[INPUT] Algorithm = %d | Quantum = %d", algorithm, quantum);
 
     //////////////////////MESSAGE QUEUE /////////////////////
-    msgKey = ftok("process_generator", 65);
+    msgKey = ftok("process_generator.c", 65);
     DBG("[MSG] ftok key = %d", msgKey);
 
     msgq_id = msgget(msgKey, IPC_CREAT | 0666);
@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
     DBG("[MSG] Message queue created : id = %d", msgq_id);
 
     ///////////////////// SHARED MEMORY ///////////////////
-    shmKey = ftok("process_generator", 66);
+    shmKey = ftok("process_generator.c", 66);
     DBG("[SHM] ftok key = %d", shmKey);
 
     shm_id = shmget(shmKey, sizeof(int) * 3, IPC_CREAT | 0666);
@@ -260,8 +260,11 @@ int main(int argc, char *argv[])
             current++;
 
         } else {
-            DBG("[GEN] Waiting for next arrival...");
-            sleep(1);
+            // DBG("[GEN] Waiting for next arrival...");
+            int temp_now = getClk();
+            while (getClk() == temp_now) {
+                usleep(10000);
+            }
         }
     }
 

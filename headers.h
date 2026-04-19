@@ -32,6 +32,10 @@ struct Process {
     int remaining_time;
     int finish_time;
     int state;
+    int start_time;
+    int last_stop_time;
+    int waiting_time;
+    pid_t pid;
 };
 
 /* ================= MESSAGE ================= */
@@ -48,7 +52,7 @@ union Semun {
 };
 
 /* ================= CLOCK SHM ================= */
-int *shmaddr;
+extern int *shmaddr;
 
 int getClk();
 void initClk();

@@ -7,7 +7,7 @@ int main(int agrc, char *argv[])
 {
     union Semun semun;
     
-    key_t semcsync = ftok("process_generator", 110);
+    key_t semcsync = ftok("process_generator.c", 110);
     if (semcsync == -1) {
         perror("ftok failed");
         exit(1);
@@ -25,7 +25,7 @@ int main(int agrc, char *argv[])
         exit(1);
     }
     
-    key_t semcsync2 = ftok("process_generator", 111);  
+    key_t semcsync2 = ftok("process_generator.c", 111);  
     if (semcsync2 == -1) {
         perror("ftok failed for second semaphore");
         exit(1);
