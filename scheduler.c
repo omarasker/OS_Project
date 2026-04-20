@@ -1,6 +1,7 @@
 #include "headers.h"
 #include "PriQueue.h"
 #include <math.h>
+#include <limits.h>
 #define LOG_FILE_NAME "scheduler.log"
 #define PERF_FILE_NAME "scheduler.perf"
 
@@ -62,6 +63,8 @@ int total_useful_time = 0;
 float total_waiting_time = 0;
 float total_WTA = 0;
 float sum_squared_WTA = 0;
+int max_finish_time = 0;
+int first_arrival_time = INT_MAX;
 
 pid_t create_process(struct Process* p) {
     if (p->pid > 0) {
@@ -95,6 +98,7 @@ void logProcessState(int time, int id, const char* state, struct Process* p) {
         float WTA = (float)TA / p->running_time;
         
         count_processes++;
+        max_finish_time = time;
         total_waiting_time += p->waiting_time;
         total_useful_time += p->running_time;
         total_WTA += WTA;
@@ -112,6 +116,7 @@ void HPF() {
     static struct Process* current_process = NULL;
     static pid_t current_pid = -1;
     static int last_clk = -1;
+    static int dispatch_after = 0; /* Earliest clock tick allowed to dispatch after a context switch. */
 
     if (current_process != NULL) {
         if (last_clk != -1 && clk > last_clk) {
@@ -146,6 +151,10 @@ void HPF() {
         new_process->remaining_time = new_process->running_time;
         new_process->pid = -1;
         
+        if (new_process->arrival_time < first_arrival_time) {
+            first_arrival_time = new_process->arrival_time;
+        }
+        
         printf("Process received: ID=%d, arrival=%d, runtime=%d, priority=%d, remaining=%d\n", 
                new_process->id, new_process->arrival_time, 
                new_process->running_time, new_process->priority,
@@ -154,6 +163,9 @@ void HPF() {
         enqueuePri(new_process, &ready_queue);
     }
     if (current_process == NULL) {
+        if (clk < dispatch_after) {
+            return;
+        }
         if (!isEmptyPri(&ready_queue)) {
             struct Process* next_process = peekPri(&ready_queue);
             if (next_process->arrival_time > clk) {
@@ -194,28 +206,11 @@ void HPF() {
             free(current_process);
             current_process = NULL;
             current_pid = -1;
-            
             if (!isEmptyPri(&ready_queue)) {
-                struct Process* next_process = peekPri(&ready_queue);
-                if (next_process->arrival_time <= clk) {
-                    current_process = dequeuePri(&ready_queue);
-                    
-                    if (current_process->start_time == -1) {
-                        current_process->start_time = clk;
-                    }
-                    current_process->waiting_time = (clk - current_process->arrival_time) - (current_process->running_time - current_process->remaining_time);
-                    current_process->state = 1;
-                    current_pid = create_process(current_process);
-                    
-                    if (current_process->start_time == clk) {
-                        logProcessState(clk, current_process->id, "started", current_process);
-                        printf("Immediately starting next process %d at time %d\n", current_process->id, clk);
-                    } else {
-                        logProcessState(clk, current_process->id, "resumed", current_process);
-                        printf("Immediately resuming next process %d at time %d\n", current_process->id, clk);
-                    }
-                }
+                dispatch_after = clk + 1; /* Context-switch overhead: 1 second before next dispatch. */
             }
+            
+            return;
         } else {
             if (!isEmptyPri(&ready_queue)) {
                 struct Process* next_process = peekPri(&ready_queue);
@@ -231,21 +226,9 @@ void HPF() {
                     logProcessState(clk, current_process->id, "stopped", current_process);
                     
                     enqueuePri(current_process, &ready_queue);
-                    
-                    current_process = dequeuePri(&ready_queue);
-                    
-                    if (current_process->start_time == -1) {
-                        current_process->start_time = clk;
-                    }
-                    current_process->waiting_time = (clk - current_process->arrival_time) - (current_process->running_time - current_process->remaining_time);
-                    current_process->state = 1;
-                    current_pid = create_process(current_process);
-                    
-                    if (current_process->start_time == clk) {
-                        logProcessState(clk, current_process->id, "started", current_process);
-                    } else {
-                        logProcessState(clk, current_process->id, "resumed", current_process);
-                    }
+                    current_process = NULL;
+                    current_pid = -1;
+                    dispatch_after = clk + 1; /* Context-switch overhead: 1 second before next dispatch. */
                 }
             }
         }
@@ -262,6 +245,7 @@ void RR(void) {
     static pid_t current_pid = -1;
     static int last_clk = -1;
     static int quantum_used = 0;
+    static int dispatch_after = 0; /* Earliest clock tick allowed to dispatch after a context switch. */
 
     /* Advance simulated time from last_clk toward clk and run one RR tick per clock step. */
     int t = last_clk;
@@ -292,25 +276,7 @@ void RR(void) {
                 current_process = NULL;
                 current_pid = -1;
                 quantum_used = 0;
-                if (!is_empty_rr()) {
-                    struct Process* np = peek_rr();
-                    if (np->arrival_time <= clk) {
-                        current_process = dequeue_rr();
-                        if (current_process->start_time == -1) {
-                            current_process->start_time = clk;
-                        }
-                        current_process->waiting_time = (clk - current_process->arrival_time) -
-                            (current_process->running_time - current_process->remaining_time);
-                        current_process->state = 1;
-                        quantum_used = 0;
-                        current_pid = create_process(current_process);
-                        if (current_process->start_time == clk) {
-                            logProcessState(clk, current_process->id, "started", current_process);
-                        } else {
-                            logProcessState(clk, current_process->id, "resumed", current_process);
-                        }
-                    }
-                }
+                dispatch_after = clk + 1; /* Context-switch overhead: 1 second before next dispatch. */
                 continue;
             }
         }
@@ -331,6 +297,10 @@ void RR(void) {
         new_process->remaining_time = new_process->running_time;
         new_process->pid = -1;
 
+        if (new_process->arrival_time < first_arrival_time) {
+            first_arrival_time = new_process->arrival_time;
+        }
+
         printf("Process received: ID=%d, arrival=%d, runtime=%d, priority=%d, remaining=%d\n",
                new_process->id, new_process->arrival_time,
                new_process->running_time, new_process->priority,
@@ -341,6 +311,9 @@ void RR(void) {
 
     /* No running process: start or resume the next ready process whose arrival time has passed. */
     if (current_process == NULL) {
+        if (clk < dispatch_after) {
+            return;
+        }
         if (!is_empty_rr()) {
             struct Process* next_process = peek_rr();
             if (next_process->arrival_time > clk) {
@@ -384,30 +357,11 @@ void RR(void) {
             current_process = NULL;
             current_pid = -1;
             quantum_used = 0;
-
             if (!is_empty_rr()) {
-                struct Process* next_process = peek_rr();
-                if (next_process->arrival_time <= clk) {
-                    current_process = dequeue_rr();
-
-                    if (current_process->start_time == -1) {
-                        current_process->start_time = clk;
-                    }
-                    current_process->waiting_time = (clk - current_process->arrival_time) -
-                        (current_process->running_time - current_process->remaining_time);
-                    current_process->state = 1;
-                    quantum_used = 0;
-                    current_pid = create_process(current_process);
-
-                    if (current_process->start_time == clk) {
-                        logProcessState(clk, current_process->id, "started", current_process);
-                        printf("Immediately starting next process %d at time %d\n", current_process->id, clk);
-                    } else {
-                        logProcessState(clk, current_process->id, "resumed", current_process);
-                        printf("Immediately resuming next process %d at time %d\n", current_process->id, clk);
-                    }
-                }
+                dispatch_after = clk + 1; /* Context-switch overhead: 1 second before next dispatch. */
             }
+
+            return;
         }
     }
 }
@@ -416,7 +370,8 @@ void cleanup_and_exit(int signum) {
     if (count_processes > 0) {
         FILE* perf_file = fopen(PERF_FILE_NAME, "w");
         if (perf_file) {
-            float cpu_util = ((float)total_useful_time / clk) * 100.0;
+            int total_time = (max_finish_time > 0 ? max_finish_time : clk) - first_arrival_time;
+            float cpu_util = ((float)total_useful_time / (total_time > 0 ? total_time : 1)) * 100.0;
             float avg_wta = total_WTA / count_processes;
             float avg_waiting = total_waiting_time / count_processes;
             
